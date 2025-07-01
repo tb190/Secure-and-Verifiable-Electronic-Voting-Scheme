@@ -1,0 +1,142 @@
+% The following AVISPA model implements the share distribution and tallying steps.
+role voter(
+    V, BC1, BC2, CC          : agent,
+    Ktls1, Ktls2             : symmetric_key,
+    Kbc1cc, Kbc2cc           : symmetric_key,
+    VtoBC1, VtoBC2           : channel(dy),
+    BC1toCC, BC2toCC         : channel(dy))         played_by V  def=
+    local
+        State               : nat,
+        Share1, Share2      : text
+    const 
+        sec_of_share1, sec_of_share2  : protocol_id
+    init
+        State := 0  
+    transition
+        % Transition that the voter starts the 
+        % protocol by generating secret shares of the  
+        % vote and sending shares to balloting 
+        % committees.
+        1. State = 0 /\ VtoBC1(start) 
+            =|> State' := 1 
+	      /\ Share1' := new()   % "Share" is a placeholder variable that represents a secret value. It stands for a part of ballot.
+            /\ Share2' := new() 
+            /\ secret({Share1'}, sec_of_share1, {V, BC1})
+            /\ secret({Share2'}, sec_of_share2, {V, BC2})              
+            /\ VtoBC1({V .Share1'}_Ktls1)
+            /\ VtoBC2({V .Share2'}_Ktls2)
+end role
+
+role ballotingCommittee1(
+    V, BC1, BC2, CC                       : agent,
+    Ktls1, Ktls2, Kbc1cc, Kbc2cc  	  : symmetric_key,
+    VtoBC1, VtoBC2,  BC1toCC, BC2toCC     : channel(dy))  played_by BC1  def=
+    local
+        State                             : nat,
+        Share1, LocalSum1                 : text
+    const 
+        sec_of_localsum1                  : protocol_id
+    init
+        State := 0
+    transition
+        % Transition that Balloting Committee 1 
+        % receives shares from the voters.   
+        % Calculates local sum of the secret   
+        % shares stored in BC1 and sent to the 
+        % central committee.
+        1. State = 0 
+            /\ VtoBC1({V .Share1'}_Ktls1)
+            =|> State' := 1 
+            /\ LocalSum1' := new()  % partial sum of secret shares stored by BC1 
+            /\ secret({LocalSum1'}, sec_of_localsum1, {BC1, CC})
+            /\ BC1toCC({BC1 .LocalSum1'}_Kbc1cc)
+end role
+
+role ballotingCommittee2(
+    V, BC1, BC2, CC                        : agent,
+    Ktls1, Ktls2,  Kbc1cc, Kbc2cc          : symmetric_key,
+    VtoBC1, VtoBC2, BC1toCC, BC2toCC       : channel(dy))  played_by BC2  def=
+    local
+        State                               : nat,
+        Share2, LocalSum2                   : text
+    const 
+        sec_of_localsum2                    : protocol_id
+     init
+        State := 0
+     transition
+        % Transition that Balloting Committee 2 
+        % receives shares from the voters.   
+        % Calculates local sum of the secret   
+        % shares stored in BC2 and sent to the 
+        % central committee.
+        1. State = 0
+            /\ VtoBC2({V .Share2'}_Ktls2)
+            =|> State' := 1 
+            /\ LocalSum2' := new()  % partial sum of secret shares stored by BC2
+            /\ secret({LocalSum2'}, sec_of_localsum2, {BC2, CC})
+            /\ BC2toCC({BC2 .LocalSum2'}_Kbc2cc)
+end role
+
+role centralCommittee(
+    V, BC1, BC2, CC                        : agent,
+    Ktls1, Ktls2,  Kbc1cc, Kbc2cc          : symmetric_key,
+    VtoBC1, VtoBC2,  BC1toCC, BC2toCC      : channel(dy))  played_by CC  def=
+    local
+        State                              : nat,
+        LocalSum1, LocalSum2               : text,
+	Received1, Received2               : nat 
+    init
+        State := 0 /\ Received1 := 0 /\ Received2 := 0
+  transition
+	% Transitions that Central Committee receives
+        % partial sums from the balloting committees
+        % and compues the result.
+        % First receive from BC1
+        1. State = 0 /\ Received1 = 0
+           /\ BC1toCC({BC1 .LocalSum1'}_Kbc1cc)
+           =|> State' := 1 
+           /\ Received1' := 1
+        % First receive from BC2
+        2. State = 1 /\ Received2 = 0
+           /\ BC2toCC({BC2 .LocalSum2'}_Kbc2cc)
+           =|> State' := 2 
+           /\ Received2' := 1
+        % If both received, move forward
+        3. State = 2 /\ Received1 = 1 /\ Received2 = 1
+           =|> State' := 1
+end role
+
+role session(
+    V, BC1, BC2,  CC                        : agent,
+    Ktls1, Ktls2, Kbc1cc, Kbc2cc            : symmetric_key) def= 
+    local 
+        VtoBC1, VtoBC2, BC1toCC, BC2toCC    : channel(dy)
+    composition 
+        voter(V, BC1, BC2, CC, Ktls1, Ktls2,  Kbc1cc, Kbc2cc, VtoBC1, VtoBC2, BC1toCC, BC2toCC)
+        /\ ballotingCommittee1(V, BC1, BC2, CC, Ktls1, Ktls2,  Kbc1cc, Kbc2cc, VtoBC1, VtoBC2, BC1toCC, BC2toCC)
+        /\ ballotingCommittee2(V, BC1, BC2, CC, Ktls1, Ktls2,  Kbc1cc, Kbc2cc, VtoBC1, VtoBC2, BC1toCC, BC2toCC)
+        /\ centralCommittee(V, BC1, BC2, CC, Ktls1, Ktls2,  Kbc1cc, Kbc2cc, VtoBC1, VtoBC2, BC1toCC, BC2toCC)
+end role
+
+role environment() def=
+    const
+        v, bc1, bc2, cc, intruder          : agent,
+        ktls1, ktls2,  kbc1cc, kbc2cc      : symmetric_key,
+        kibc1, kibc2                       : symmetric_key,
+        sec_of_share1, sec_of_share2       : protocol_id,
+        sec_of_localsum1, sec_of_localsum2 : protocol_id
+    composition
+        session(v, bc1, bc2, cc, ktls1, ktls2,  kbc1cc, kbc2cc)
+        /\ session(v, bc1, bc2, cc, ktls1, ktls2,  kbc1cc, kbc2cc)
+        /\ session(v, intruder, bc2, cc, kibc1, ktls2,  kibc1, kbc2cc)
+        /\ session(v, bc1, intruder, cc, ktls1, kibc2,  kbc1cc, kibc2)
+end role
+
+goal % Goals requested to be verified 
+  secrecy_of sec_of_share1
+  secrecy_of sec_of_share2
+  secrecy_of sec_of_localsum1
+  secrecy_of sec_of_localsum2
+end goal
+
+environment()

@@ -1,0 +1,117 @@
+% The following AVISPA model implements registration between a voter (V) and a trusted Identity Provider Server (IPS).
+% Due to the limitations of the HLPSL language to formally define blinding operations, 
+% the certificate is denoted as $Cert' \mathrel{:=} \text{new}()$. This abstraction relies 
+% on the assumption that the cryptographic blinding mechanism is both secure and correctly 
+% implemented in the scheme, beyond the scope of the formal model.
+
+role voter(
+    V, IPS                 : agent,
+    % Encryption with Ktls is used as a shortcut to model confidentiality and integrity properties of TLS.
+    Ktls                   : symmetric_key, 
+    PUips                  : public_key,
+    PUv                    : public_key,
+    H                      : hash_func,
+    VtoIPS, IPStoV         : channel(dy)) played_by V def=
+    local
+        State : nat,
+        Id, Token, Cert, AssignedBC    : text
+    const 
+        sec_of_ID, sec_of_Cert         : protocol_id
+    init
+	    State := 0
+    transition
+        1. State=0 % Transition where identity info is sent
+            /\ VtoIPS(start) 
+            =|> State':=1 
+            /\ Id':=new() 
+            /\ secret({Id'}, sec_of_ID, {V, IPS}) 
+            /\ VtoIPS({V .Id'}_Ktls ) 
+        % Transition where the voter receives 
+        % a token and sends a blinded certificate.
+        2. State=1 
+           /\ IPStoV({{{IPS .Token'}_PUv}_inv(PUips)}_Ktls)   
+            =|> State':=2 
+            /\ Cert':=new()
+            /\ secret({Cert'}, sec_of_Cert, {V, IPS}) 
+            /\ VtoIPS({V .Cert' .{H(Cert' .Token')}_inv(PUv)}_Ktls)
+        % Transition that the voter receives a signed 
+        % blinded certificate and stores the signed 
+        % certificate by unbliding it.
+ 	3. State=2 
+            /\ IPStoV({IPS .Cert .{H(Cert)}_inv(PUips) .AssignedBC'}_Ktls) 
+            =|> State':=3 
+end role
+
+role identityProviderServer(
+    V, IPS                 : agent,
+    Ktls                   : symmetric_key, 
+    PUips                  : public_key,
+    PUv                    : public_key,
+    H                      : hash_func,
+    VtoIPS, IPStoV         : channel(dy)) played_by IPS def=
+    local
+        State : nat,
+        Id, Token, Cert, AssignedBC    : text    
+    const 
+        sec_of_token, sec_of_BC        : protocol_id
+    init
+        State := 0
+    transition
+        %%% Registration Phase
+        % Transition that IPS receives the  
+        % identity info and sends a signed token.
+        1. State=0 
+            /\ VtoIPS({V .Id'}_Ktls) 
+            =|> State':=1 
+            /\ Token':=new() 
+            /\ secret({Token'}, sec_of_token, {V, IPS})
+            /\ IPStoV({{{IPS.Token'}_PUv}_inv(PUips)}_Ktls)
+	  % Transition that IPS receives and signs the certificate.
+        2. State=1 
+            /\ VtoIPS({V .Cert' .{H(Cert' .Token')}_inv(PUv)}_Ktls)
+            =|> State':=2 
+            /\ AssignedBC':=new()       
+            /\ secret({AssignedBC'}, sec_of_BC, {V, IPS}) 
+            /\ IPStoV({IPS .Cert' .{H(Cert')}_inv(PUips) .AssignedBC'}_Ktls)    
+end role
+
+role session(
+    V, IPS                  : agent,
+    Ktls                    : symmetric_key, 
+    PUips                   : public_key,
+    PUv                     : public_key,
+    H                       : hash_func) def=
+    local 
+        VtoIPS, IPStoV    : channel(dy)
+    composition
+        voter(V, IPS, Ktls , PUips, PUv, H, VtoIPS, IPStoV)
+        /\ identityProviderServer(V, IPS, Ktls , PUips, PUv, H, VtoIPS, IPStoV)
+end role
+
+role environment() def=
+    const
+        v, ips, intruder    : agent,
+        ktls , ki           : symmetric_key, 
+        puips               : public_key,
+        puv                 : public_key,
+        h                   : hash_func,
+        sec_of_ID, sec_of_Cert, sec_of_token, sec_of_BC  : protocol_id
+    intruder_knowledge = {v, ips, intruder, ki, puips, puv}
+    % The first two sessions are included to
+    % model a potential replay attack scenario.
+    % And, since IPS is assumed to be a trusted
+    % entity, it can not be intruder.
+    composition
+	session(v, ips, ktls , puips, puv, h)
+        /\ session(v, ips, ktls , puips, puv, h)
+        /\ session(intruder, ips, ki, puips, puv, h)
+end role
+
+goal % Goals requested to be verified.
+  secrecy_of sec_of_ID
+  secrecy_of sec_of_Cert
+  secrecy_of sec_of_token
+  secrecy_of sec_of_BC
+end goal
+
+environment()

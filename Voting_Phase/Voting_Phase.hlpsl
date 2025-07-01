@@ -1,0 +1,110 @@
+%The following AVISPA model implements the voting phase of an electronic voting scheme.
+role voter(
+    V, BC                           : agent,
+    H                               : hash_func,
+    % Encryption with Ktls is used as a shortcut to
+    % model confidentiality and integrity properties
+    % of TLS.
+    Ktls                            : symmetric_key,
+    PUbc                            : public_key,
+    VtoBC, BCtoV                    : channel(dy)) played_by V def=
+    local
+        State : nat,
+        BlindedBallot, Token, ACK, NIZKProof, Perm   : text                             
+    const 
+        sec_of_Ballot, sec_of_Token, sec_of_ACK, sec_of_NIZKProof    : protocol_id
+    init
+        State := 0
+    transition
+ 	% Transition that the voter starts the voting 
+        % process and sends the blinded ballot.
+        1. State=0 
+            /\ VtoBC(start) 
+            =|> State':= 1 
+            /\ BlindedBallot':=new()
+	      /\ Token':=new()
+            /\ NIZKProof':=new()
+            /\ secret({BlindedBallot'}, sec_of_Ballot, {V, BC}) 
+            /\ secret({Token'}, sec_of_Token, {V, BC}) 
+            /\ secret({NIZKProof'}, sec_of_NIZKProof, {V, BC})
+            /\ VtoBC({V .BlindedBallot' .Token' .NIZKProof'}_Ktls) 
+        % Transition that the voter receives a signed 
+        % blinded ballot and verification hash from  
+        % the balloting committee. Then unblinds the  
+        % signed blinded ballot. If the hash value and 
+        % the signature are valid, voter sends ACK.
+        2. State=1
+            /\ BCtoV({BC .BlindedBallot .{H(BlindedBallot)}_inv(PUbc)}_Ktls)  
+            =|> State':= 2
+            /\ ACK':= new()
+            /\ secret({ACK'}, sec_of_ACK, {V, BC}) 
+            /\ VtoBC({V .ACK'}_Ktls) 
+	  % Transition that the voter receives the permission.
+	  3. State=2
+            /\ BCtoV({BC .{Perm'}_inv(PUbc)}_Ktls) 
+            =|> State':= 3
+end role  
+
+role ballotingCommittee(
+    V, BC                           : agent,
+    H                               : hash_func,
+    Ktls                            : symmetric_key,
+    PUbc                            : public_key,
+    VtoBC, BCtoV                    : channel(dy)) played_by BC def=
+    local
+        State : nat,
+        BlindedBallot, Token, ACK, NIZKProof, Perm: text 
+    init
+        State := 0
+    transition
+	  % Transition that the balloting committee  
+        % receives the blinded ballot from the voter,  
+        % signs the blinded ballot, generates 
+        % verification hash and sends them back.
+        1. State=0 
+            /\ VtoBC({V .BlindedBallot' .Token' .NIZKProof'}_Ktls) 
+            =|> State':= 1 
+            /\ BCtoV({BC .BlindedBallot'.{H(BlindedBallot')}_inv(PUbc)}_Ktls) 
+        % The balloting committee receives an 
+        % acknowledgment and stores the token 
+        % and hash value.
+        2. State=1
+            /\ VtoBC({V .ACK'}_Ktls) 
+            =|> State':= 2
+            /\ Perm':= new()
+            /\ BCtoV({BC .{Perm'}_inv(PUbc)}_Ktls)
+end role
+
+role session(
+    V, BC                 : agent,
+    H                     : hash_func,
+    Ktls                  : symmetric_key,
+    PUbc                  : public_key) def=
+    local 
+        VtoBC, BCtoV          : channel(dy)
+    composition
+        voter(V, BC, H, Ktls, PUbc,VtoBC, BCtoV)
+        /\ ballotingCommittee(V, BC, H, Ktls, PUbc,VtoBC, BCtoV)
+end role
+
+role environment() def=
+    const
+        v, bc, intruder            : agent,
+        ktls                       : symmetric_key,
+        ki                         : symmetric_key,
+        pubc                       : public_key,
+        h                          : hash_func,
+        sec_of_Ballot, sec_of_Token, sec_of_ACK, sec_of_NIZKProof  : protocol_id
+    intruder_knowledge = {v, bc, intruder, ki, pubc}
+    composition
+        session(v, intruder, h, ki, pubc)
+        /\ session(v, bc, h, ktls, pubc)  
+        /\ session(v, bc, h, ktls, pubc)
+    end role
+goal % Goals requested to be verified
+    secrecy_of sec_of_Ballot
+    secrecy_of sec_of_Token
+    secrecy_of sec_of_ACK
+    secrecy_of sec_of_NIZKProof
+end goal
+environment()
